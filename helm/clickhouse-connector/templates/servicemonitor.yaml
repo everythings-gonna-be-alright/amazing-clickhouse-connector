@@ -1,0 +1,16 @@
+{{- if .Values.serviceMonitor.enabled -}}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "clickhouse-connector.fullname" . }}
+  labels:
+    {{- include "clickhouse-connector.labels" . | nindent 4 }}
+spec:
+  endpoints:
+    - interval: 15s
+      port: metrics
+      path: /metrics
+  selector:
+    matchLabels:
+      {{- include "clickhouse-connector.selectorLabels" . | nindent 6 }}
+{{- end }}

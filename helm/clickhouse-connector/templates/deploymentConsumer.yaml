@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "clickhouse-connector.fullname" . }}-consumer
+  labels:
+    {{- include "clickhouse-connector.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.consumerReplicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "clickhouse-connector.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "clickhouse-connector.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "clickhouse-connector.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: [ "/sbin/clickhouse-connector", "-mode","consumer",
+                     "-threads","{{ .Values.config.threads }}",
+                     "-redisServer", "{{ include "clickhouse-connector.fullname" . }}-redis-master:6379",
+                     "-clickhouseServer","{{ .Values.config.clickhouse.address }}",
+                     "-clickhouseUsername","{{ .Values.config.clickhouse.user }}",
+                     "-clickhousePassword","{{ .Values.config.clickhouse.password }}",
+                     "-clickhouseDatabaseName","{{ .Values.config.clickhouse.database }}",
+                     "-clickhouseClusterName","{{ .Values.config.clickhouse.clusterName }}",
+                     "-clickhouseBatchSize","{{ .Values.config.clickhouse.BatchSize }}" ]
+          ports:
+            - name: metrics
+              containerPort: 6001
+              protocol: TCP
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

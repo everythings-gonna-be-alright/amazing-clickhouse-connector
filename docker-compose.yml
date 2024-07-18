@@ -1,0 +1,67 @@
+version: '3'
+services:
+  server:
+    ports:
+      - 6000:6000
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: ["/sbin/clickhouse-connector",
+                 "-mode","server",
+                 "-listen-address",":6000",
+                 "-redisServer","redis:6379"]
+    networks:
+      - sp-net
+
+  consumer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: ["/sbin/clickhouse-connector",
+                 "-mode","consumer",
+                 "-redisServer","clickhouse-connector_redis_1:6379",
+                 "-clickhouseServer","clickhouse-connector_clickhouse1_1:9000",
+                 "-clickhouseDatabaseName","default"]
+    networks:
+      - sp-net
+
+  clickhouse1:
+    image: clickhouse/clickhouse-server:22.11.6-alpine
+    ports:
+      - 9000:9000
+      - 8123:8123
+    volumes:
+      - ./docker/clickhouse1/config.xml:/etc/clickhouse-server/config.xml:delegated
+      - ./docker/clickhouse1/users.xml:/etc/clickhouse-server/users.xml:delegated
+    networks:
+      - sp-net
+
+  clickhouse2:
+    image: clickhouse/clickhouse-server:22.11.6-alpine
+    volumes:
+      - ./docker/clickhouse2/config.xml:/etc/clickhouse-server/config.xml:delegated
+      - ./docker/clickhouse2/users.xml:/etc/clickhouse-server/users.xml:delegated
+    networks:
+      - sp-net
+
+  zoo:
+    image: zookeeper:3.7.0
+    ports:
+      - 2181:2181
+    environment:
+      ZOO_MY_ID: 1
+      ZOO_STANDALONE_ENABLED: "true"
+    networks:
+      - sp-net
+
+  redis:
+    image: redis:7.0.5
+    ports:
+      - 6379:6379
+    networks:
+      - sp-net
+
+
+networks:
+  sp-net:
+    driver: "bridge"

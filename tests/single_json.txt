@@ -1,0 +1,1 @@
+{"url":"/test/get","country":"California","method":"get","time":210,"event_type":"response_time_base_api","connection_type":"wifi","status":"200","request_domain":"https://test.com","content_type":"application/json","current_scene":"back","user_id":11884672,"environment":"stage","platform":"ios","app_version":"382","device":"iPhone 14 Pro","os_version":"16.0","carrier":"unknown"}

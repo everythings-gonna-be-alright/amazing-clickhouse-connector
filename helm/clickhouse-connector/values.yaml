@@ -1,0 +1,141 @@
+# Default values for clickhouse-connector.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+serverReplicaCount: 1
+
+consumerReplicaCount: 1
+
+image:
+  repository: my-repo/clickhouse-connector
+  pullPolicy: Always
+  # Overrides the image tag whose default is the chart appVersion.
+  tag: "latest"
+
+imagePullSecrets:
+  - name: ""
+nameOverride: ""
+fullnameOverride: ""
+
+config:
+  threads: 1
+  authKey: "c1110b00-00x0-111e-110c-101b22x1111d"
+  clickhouse:
+    address: my.clickhouse.server.com:9900
+    username: from_ci
+    password: from_ci
+    database: amazing_clickhouse_connector
+    clusterName: prod_cluster
+    BatchSize: 1
+
+
+serviceMonitor:
+  enabled: true
+
+serviceAccount:
+  # Specifies whether a service account should be created
+  create: true
+  # Annotations to add to the service account
+  annotations: {}
+  # The name of the service account to use.
+  # If not set and create is true, a name is generated using the fullname template
+  name: ""
+
+podAnnotations: {}
+
+podSecurityContext:
+  fsGroup: 1000
+
+securityContext:
+   capabilities:
+     drop:
+     - ALL
+   privileged: false
+   allowPrivilegeEscalation: false
+   readOnlyRootFilesystem: true
+   runAsNonRoot: true
+   runAsUser: 1000
+   runAsGroup: 1000
+
+service:
+  type: ClusterIP
+  port: 6000
+  metricsPort: 6001
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: ""
+      paths:
+        - path: /api/v1/s2s/event
+          pathType: Exact
+        - path: /api/v1/events/bulk
+          pathType: Exact
+  tls:
+    - secretName: ""
+      hosts:
+        - ""
+
+
+resources: {}
+# We usually recommend not to specify default resources and to leave this as a conscious
+# choice for the user. This also increases chances charts run on environments with little
+# resources, such as Minikube. If you do want to specify resources, uncomment the following
+# lines, adjust them as necessary, and remove the curly braces after 'resources:'.
+#  limits:
+#    cpu: 4
+#    memory: 512Mi
+#  requests:
+#    cpu: 500m
+#    memory: 128Mi
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 100
+  targetCPUUtilizationPercentage: 80
+  # targetMemoryUtilizationPercentage: 80
+
+nodeSelector:
+  node.kubernetes.io/role: system
+
+tolerations: []
+
+affinity: {}
+
+redis:
+  enable: true
+  architecture: standalone
+  auth:
+    enabled: false
+  metrics:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+    resources: {}
+#      limits:
+#        cpu: 100m
+#        memory: 128Mi
+#      requests:
+#        cpu: 50m
+#        memory: 32Mi
+  master:
+    persistence:
+      enabled: false
+    resources: {}
+#      limits:
+#        cpu: 1
+#        memory: 512Mi
+#      requests:
+#        cpu: 100m
+#        memory: 256Mi
+    nodeSelector:
+      node.kubernetes.io/role: system
+  commonConfiguration: |-
+    appendonly no
+    save ""
+
+networkPolicy:
+  enabled: true
