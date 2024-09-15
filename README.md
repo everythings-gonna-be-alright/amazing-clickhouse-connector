@@ -5,13 +5,14 @@ Tools for receiving metrics from clients through https as json objects, putting 
 
 Built to withstand high throughput by design and for running in Kubernetes.
 
+![Diagram](diagram.svg)
+
 ## Features:
 * Multi-thread batching
 * Async inserts
 * Prometheus monitoring out of the box
 * Process table alters automatically if event arrives with new column
 * Based on event type filed can put different events it into the corresponding table
-
 
 ## Hot to use it?
 
