@@ -1,36 +1,49 @@
 # Default values for clickhouse-connector.
-# This is a YAML-formatted file.
-# Declare variables to be passed into your templates.
+# Override per environment with an additional values file (-f) or --set.
 
-serverReplicaCount: 1
+serverReplicaCount: 2
 
-consumerReplicaCount: 1
+consumerReplicaCount: 2
 
 image:
-  repository: my-repo/clickhouse-connector
-  pullPolicy: Always
+  repository: clickhouse-connector
+  pullPolicy: IfNotPresent
   # Overrides the image tag whose default is the chart appVersion.
-  tag: "latest"
+  tag: ""
 
-imagePullSecrets:
-  - name: ""
+imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 
 config:
-  threads: 1
-  authKey: "c1110b00-00x0-111e-110c-101b22x1111d"
+  threads: 4
+  # Required. Pass at runtime (--set-string), never commit real values.
+  authKey: ""
+  # Optional. Keeps the previous key valid during a rotation.
+  authKeyPrevious: ""
+  maxBodyBytes: 1048576
+  maxColumns: 1000
+  redis:
+    # Empty: generated once and kept in the release secret.
+    password: ""
   clickhouse:
-    address: my.clickhouse.server.com:9900
-    username: from_ci
-    password: from_ci
-    database: amazing_clickhouse_connector
-    clusterName: prod_cluster
-    BatchSize: 1
-
+    address: clickhouse.clickhouse.svc.cluster.local:9000
+    user: default
+    # Pass at runtime (--set), never commit real values.
+    password: ""
+    database: clickhouse_connector
+    clusterName: ""
+    tls: false
+    tlsSkipVerify: false
+    # Keep the legacy dist_ table prefix on single-instance setups migrated from a cluster.
+    legacyDistPrefix: false
+    BatchSize: 10000
+  # columnTypesConfig:
+  #   app_version: "String"
+  #   ts: "String"
 
 serviceMonitor:
-  enabled: true
+  enabled: false
 
 serviceAccount:
   # Specifies whether a service account should be created
@@ -44,52 +57,51 @@ serviceAccount:
 podAnnotations: {}
 
 podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
   fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
 
 securityContext:
-   capabilities:
-     drop:
-     - ALL
-   privileged: false
-   allowPrivilegeEscalation: false
-   readOnlyRootFilesystem: true
-   runAsNonRoot: true
-   runAsUser: 1000
-   runAsGroup: 1000
+  capabilities:
+    drop:
+      - ALL
+  privileged: false
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
 
 service:
   type: ClusterIP
   port: 6000
   metricsPort: 6001
 
-ingress:
+httpRoute:
   enabled: false
-  className: ""
-  annotations: {}
-  hosts:
-    - host: ""
-      paths:
-        - path: /api/v1/s2s/event
-          pathType: Exact
-        - path: /api/v1/events/bulk
-          pathType: Exact
-  tls:
-    - secretName: ""
-      hosts:
-        - ""
+  parentRefs:
+    - name: gateway
+      namespace: gateway-system
+      sectionName: https
+  hostnames:
+    - connector.example.com
+  paths:
+    - path: /api/v1/s2s/event
+      pathType: Exact
+  timeouts:
+    request: 60s
+    backendRequest: 60s
 
-
-resources: {}
-# We usually recommend not to specify default resources and to leave this as a conscious
-# choice for the user. This also increases chances charts run on environments with little
-# resources, such as Minikube. If you do want to specify resources, uncomment the following
-# lines, adjust them as necessary, and remove the curly braces after 'resources:'.
-#  limits:
-#    cpu: 4
-#    memory: 512Mi
-#  requests:
-#    cpu: 500m
-#    memory: 128Mi
+resources:
+  limits:
+    cpu: 2
+    memory: 1024Mi
+  requests:
+    cpu: 300m
+    memory: 256Mi
 
 autoscaling:
   enabled: false
@@ -98,44 +110,78 @@ autoscaling:
   targetCPUUtilizationPercentage: 80
   # targetMemoryUtilizationPercentage: 80
 
-nodeSelector:
-  node.kubernetes.io/role: system
+nodeSelector: {}
 
 tolerations: []
 
 affinity: {}
 
-redis:
-  enable: true
-  architecture: standalone
+# Valkey queue backend (official valkey-io chart). Disable to use an external Redis-compatible server.
+valkey:
+  enabled: true
+  image:
+    registry: docker.io
+    repository: valkey/valkey
+    tag: "9.1.3-alpine@sha256:bf09d58e96d6b4524a15396b65b242bbe18beebbcc15a04d8ee75ddac62fae0b"
+  serviceAccount:
+    create: true
+    automount: false
+  deploymentStrategy: Recreate
   auth:
-    enabled: false
-  metrics:
     enabled: true
-    serviceMonitor:
-      enabled: true
-    resources: {}
-#      limits:
-#        cpu: 100m
-#        memory: 128Mi
-#      requests:
-#        cpu: 50m
-#        memory: 32Mi
-  master:
-    persistence:
-      enabled: false
-    resources: {}
-#      limits:
-#        cpu: 1
-#        memory: 512Mi
-#      requests:
-#        cpu: 100m
-#        memory: 256Mi
-    nodeSelector:
-      node.kubernetes.io/role: system
-  commonConfiguration: |-
+    # The release secret holds the generated password under redis-password.
+    usersExistingSecret: "{{ .Release.Name }}-secrets"
+    aclUsers:
+      default:
+        passwordKey: redis-password
+        # The queue only needs basic list/set commands; block destructive and scripting commands.
+        permissions: "~* &* +@all -flushdb -flushall -eval -evalsha -eval_ro -evalsha_ro -script -function -fcall -fcall_ro -pfadd -pfcount -pfmerge -pfdebug -pfselftest"
+  valkeyConfig: |
     appendonly no
     save ""
+    maxmemory 400mb
+    maxmemory-policy allkeys-lru
+  dataStorage:
+    enabled: false
+  resources:
+    limits:
+      cpu: 1
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 256Mi
+  metrics:
+    enabled: true
+    exporter:
+      image:
+        registry: ghcr.io
+        repository: oliver006/redis_exporter
+        tag: "v1.79.0@sha256:67e175f144212fe5796b3134dae1f3db33782b57dc53f7c6f5d938f8f70d9754"
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+        readOnlyRootFilesystem: true
+        runAsNonRoot: true
+        runAsUser: 1000
+      resources:
+        limits:
+          cpu: 100m
+          memory: 128Mi
+        requests:
+          cpu: 50m
+          memory: 32Mi
+    serviceMonitor:
+      enabled: false
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
 
 networkPolicy:
   enabled: true
+  # Extra egress for ClickHouse outside the cluster (e.g. a managed service endpoint).
+  clickhouseEgress:
+    cidrs: []
+    ports:
+      - 9440

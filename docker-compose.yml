@@ -1,67 +1,50 @@
-version: '3'
 services:
   server:
-    ports:
-      - 6000:6000
     build:
       context: .
-      dockerfile: Dockerfile
     entrypoint: ["/sbin/clickhouse-connector",
-                 "-mode","server",
-                 "-listen-address",":6000",
-                 "-redisServer","redis:6379"]
-    networks:
-      - sp-net
+                 "-mode", "server",
+                 "-redisServer", "redis:6379"]
+    environment:
+      AUTH_KEY: local-dev-auth-key-only
+    ports:
+      - 127.0.0.1:6000:6000
+    depends_on:
+      - redis
 
   consumer:
     build:
       context: .
-      dockerfile: Dockerfile
     entrypoint: ["/sbin/clickhouse-connector",
-                 "-mode","consumer",
-                 "-redisServer","clickhouse-connector_redis_1:6379",
-                 "-clickhouseServer","clickhouse-connector_clickhouse1_1:9000",
-                 "-clickhouseDatabaseName","default"]
-    networks:
-      - sp-net
-
-  clickhouse1:
-    image: clickhouse/clickhouse-server:22.11.6-alpine
-    ports:
-      - 9000:9000
-      - 8123:8123
-    volumes:
-      - ./docker/clickhouse1/config.xml:/etc/clickhouse-server/config.xml:delegated
-      - ./docker/clickhouse1/users.xml:/etc/clickhouse-server/users.xml:delegated
-    networks:
-      - sp-net
-
-  clickhouse2:
-    image: clickhouse/clickhouse-server:22.11.6-alpine
-    volumes:
-      - ./docker/clickhouse2/config.xml:/etc/clickhouse-server/config.xml:delegated
-      - ./docker/clickhouse2/users.xml:/etc/clickhouse-server/users.xml:delegated
-    networks:
-      - sp-net
-
-  zoo:
-    image: zookeeper:3.7.0
-    ports:
-      - 2181:2181
+                 "-mode", "consumer",
+                 "-redisServer", "redis:6379",
+                 "-clickhouseServer", "clickhouse:9000",
+                 "-clickhouseUsername", "connector",
+                 "-clickhouseDatabaseName", "clickhouse_connector",
+                 "-clickhouseClusterName", "",
+                 "-clickhouseBatchSize", "1",
+                 "-columnTypesConfig", "{\"connection_type\":\"String\",\"ts\":\"String\"}"]
     environment:
-      ZOO_MY_ID: 1
-      ZOO_STANDALONE_ENABLED: "true"
-    networks:
-      - sp-net
+      CLICKHOUSE_PASSWORD: local-dev-password-only
+    depends_on:
+      - redis
+      - clickhouse
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:26.8.36.3@sha256:d426d2f612e1e189c90f9a3f8dcd85a03c6851273833817a296bb327e63aa7a7
+    environment:
+      CLICKHOUSE_DB: clickhouse_connector
+      CLICKHOUSE_USER: connector
+      CLICKHOUSE_PASSWORD: local-dev-password-only
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "0"
+    ports:
+      - 127.0.0.1:8123:8123
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
 
   redis:
-    image: redis:7.0.5
+    image: valkey/valkey:9.1.3-alpine@sha256:bf09d58e96d6b4524a15396b65b242bbe18beebbcc15a04d8ee75ddac62fae0b
     ports:
-      - 6379:6379
-    networks:
-      - sp-net
-
-
-networks:
-  sp-net:
-    driver: "bridge"
+      - 127.0.0.1:6379:6379

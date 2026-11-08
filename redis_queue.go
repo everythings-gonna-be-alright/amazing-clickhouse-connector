@@ -1,12 +1,14 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"log"
+	"time"
+
 	"github.com/adjust/rmq/v5"
 	"github.com/avast/retry-go"
-	"log"
-	_ "net/http/pprof"
-	"time"
+	"github.com/go-redis/redis/v8"
 )
 
 const (
@@ -17,18 +19,21 @@ const (
 	shouldLog       = false
 )
 
+// Consumer struct
 type Consumer struct {
 	name   string
 	count  int
 	before time.Time
 }
 
+// rmqConnect function connect to redis queue
 func rmqConnect() {
 	var err error
+	go rmqLogErrors(redisErrChan)
 	retry.Do(
 		func() error {
-			go rmqLogErrors(redisErrChan)
-			redisConnection, err = rmq.OpenConnection("clickhouse_connector", "tcp", *redisServer, 0, redisErrChan)
+			redisClient := redis.NewClient(&redis.Options{Network: "tcp", Addr: *redisServer, DB: 0, Password: *redisPassword})
+			redisConnection, err = rmq.OpenConnectionWithRedisClient("clickhouse_connector", redisClient, redisErrChan)
 			if err != nil {
 				monitoringRedisConnectErrors.WithLabelValues(*redisServer).Inc()
 				log.Printf("redis connection error: %v", err)
@@ -42,6 +47,7 @@ func rmqConnect() {
 	log.Printf("Connected to redis queue: %s", *redisServer)
 }
 
+// NewConsumer function create new redis queue consumer
 func NewConsumer(tag int) *Consumer {
 	return &Consumer{
 		name:   fmt.Sprintf("%s-%d", hostName, tag),
@@ -50,6 +56,7 @@ func NewConsumer(tag int) *Consumer {
 	}
 }
 
+// Consume function consume redis queue element
 func (consumer *Consumer) Consume(delivery rmq.Delivery) {
 
 	payload := delivery.Payload()
@@ -71,12 +78,17 @@ func (consumer *Consumer) Consume(delivery rmq.Delivery) {
 		element, err := createMapFromJSON(payload)
 		if err != nil {
 			log.Printf("Create map from json error: %v", err)
+			return
 		}
 		payloadMap, _ := element.(map[string]interface{})
 		if *clickhouseAsyncMode == true {
 			err = insertIntoClickhouseAsync(clickhouseConnection, payloadMap, consumer.name)
 		} else {
 			err = insertIntoClickhouse(clickhouseConnection, payloadMap, consumer.name)
+		}
+		if errors.Is(err, errInvalidPayload) {
+			log.Printf("[%s] dropping event: %v", consumer.name, err)
+			return
 		}
 		if err != nil {
 			log.Printf("Clickhouse error: %v", err)
@@ -129,13 +141,13 @@ func rmqWrite(queue rmq.Queue, element string) error {
 func rmqReturnRejected() {
 	go func() error {
 		ticker := time.NewTicker(10 * time.Second)
-		for _ = range ticker.C {
+		for range ticker.C {
 			queues, _ := redisConnection.GetOpenQueues()
 			stats, _ := redisConnection.CollectStats(queues)
 			for queue, queueStats := range stats.QueueStats {
 				if queueStats.RejectedCount > 100 {
 					taskRejectedQueue, err := redisConnection.OpenQueue(queue)
-					_, err = taskRejectedQueue.ReturnRejected(10000)
+					_, err = taskRejectedQueue.ReturnRejected(1000)
 					if err != nil {
 						return err
 					}
@@ -152,7 +164,7 @@ func rmqCleaner() {
 	go func() error {
 		ticker := time.NewTicker(60 * time.Second)
 		cleaner := rmq.NewCleaner(redisConnection)
-		for _ = range ticker.C {
+		for range ticker.C {
 			returned, err := cleaner.Clean()
 			if err != nil {
 				log.Printf("rmq failed to clean: %s", err)

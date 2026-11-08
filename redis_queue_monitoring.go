@@ -14,6 +14,7 @@ type queueStatsCounters struct {
 	unackedCount    prometheus.Gauge
 }
 
+// RecordRmqMetrics function record redis queue metrics to prometheus
 func RecordRmqMetrics(connection rmq.Connection) {
 	counters := registerCounters(connection)
 

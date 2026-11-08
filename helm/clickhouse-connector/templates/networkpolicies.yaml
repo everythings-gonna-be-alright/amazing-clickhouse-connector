@@ -4,46 +4,133 @@ kind: NetworkPolicy
 metadata:
   name: {{ include "clickhouse-connector.fullname" . }}
 spec:
-  podSelector: {}
+  podSelector:
+    matchLabels: {{- include "clickhouse-connector.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    {{- if (.Values.httpRoute).enabled }}
+    {{- range .Values.httpRoute.parentRefs }}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .namespace | default "envoy-gateway-system" }}
+          podSelector:
+            matchLabels:
+              gateway.envoyproxy.io/owning-gateway-name: {{ .name }}
+      ports:
+        - port: http
+          protocol: TCP
+    {{- end }}
+    {{- end }}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: victoria-metrics
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: vmagent
+      ports:
+        - port: metrics
+          protocol: TCP
+    - from:
+        - podSelector: {}
+      ports:
+        - port: http
+          protocol: TCP
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: node-local-dns
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: altinity-clickhouse-operator
+          podSelector: {}
+      ports:
+        - port: 8123
+          protocol: TCP
+        - port: 9000
+          protocol: TCP
+        - port: 9440
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "clickhouse-connector.redisSelectorLabels" . | nindent 14 }}
+      ports:
+        - port: 6379
+          protocol: TCP
+    {{- with .Values.networkPolicy.clickhouseEgress }}
+    {{- if .cidrs }}
+    - to:
+        {{- range .cidrs }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+      ports:
+        {{- range .ports }}
+        - port: {{ . }}
+          protocol: TCP
+        {{- end }}
+    {{- end }}
+    {{- end }}
+{{- end }}
+{{- if and .Values.networkPolicy.enabled .Values.valkey.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "clickhouse-connector.redisFullname" . }}
+  labels:
+    {{- include "clickhouse-connector.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "clickhouse-connector.redisSelectorLabels" . | nindent 6 }}
   policyTypes:
     - Ingress
     - Egress
   ingress:
     - from:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: ingress-nginx-external
         - podSelector:
-            matchLabels:
-              app.kubernetes.io/instance: ingress-nginx-external
-    - from:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: ingress-nginx-ip
-        - podSelector:
-            matchLabels:
-              app.kubernetes.io/instance: ingress-nginx-ip
+            matchLabels: {{- include "clickhouse-connector.selectorLabels" . | nindent 14 }}
+      ports:
+        - port: 6379
+          protocol: TCP
+    {{- if .Values.valkey.metrics.enabled }}
     - from:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: victoria-metrics
-        - podSelector:
-            matchLabels:
-              app.kubernetes.io/name: vmagent
-    - from:
-        - podSelector: {}
-  egress:
-    - to:
-        - ipBlock:
-            cidr: 0.0.0.0/0
-    - ports:
-        - port: 53
-          protocol: UDP
-      to:
-        - namespaceSelector: {}
           podSelector:
             matchLabels:
-              k8s-app: kube-dns
-    - to:
-        - podSelector: {}
+              app.kubernetes.io/name: vmagent
+      ports:
+        - port: 9121
+          protocol: TCP
+    {{- end }}
+  egress: []
 {{- end }}

@@ -1,1 +1,17 @@
+/clickhouse-connector
+*.test
+*.out
+
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+values-*.yaml
+.gitlab-ci.yml
+
 .idea/
+.vscode/
+.DS_Store
+reports/

@@ -2,21 +2,40 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
-	"github.com/ClickHouse/clickhouse-go/v2"
-	"github.com/google/uuid"
 	"hash/fnv"
 	"log"
 	"net"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/ClickHouse/clickhouse-go/v2"
+	"github.com/google/uuid"
 )
 
 // clickhouseConnect function for establishing connection with clickhouse database
 func clickhouseConnect() (clickhouse.Conn, error) {
 	var dialCount int
+
+	// Build a TLS config when TLS is enabled (required by ClickHouse Cloud, port 9440).
+	// Certificates are verified by default; verification can only be disabled explicitly for testing.
+	var tlsConfig *tls.Config
+	if *clickhouseTLS {
+		serverName := *clickhouseServer
+		if host, _, splitErr := net.SplitHostPort(*clickhouseServer); splitErr == nil {
+			serverName = host
+		}
+		tlsConfig = &tls.Config{
+			ServerName:         serverName,
+			MinVersion:         tls.VersionTLS12,
+			InsecureSkipVerify: *clickhouseTLSSkipVerify,
+		}
+	}
+
 	conn, err := clickhouse.Open(&clickhouse.Options{
 		Addr: []string{*clickhouseServer},
 		Auth: clickhouse.Auth{
@@ -27,7 +46,21 @@ func clickhouseConnect() (clickhouse.Conn, error) {
 		DialContext: func(ctx context.Context, addr string) (net.Conn, error) {
 			dialCount++
 			var d net.Dialer
-			return d.DialContext(ctx, "tcp", addr)
+			rawConn, dialErr := d.DialContext(ctx, "tcp", addr)
+			if dialErr != nil {
+				return nil, dialErr
+			}
+			// A custom DialContext bypasses the library's built-in TLS handling,
+			// so the TLS handshake must be performed here when TLS is enabled.
+			if tlsConfig == nil {
+				return rawConn, nil
+			}
+			tlsConn := tls.Client(rawConn, tlsConfig)
+			if handshakeErr := tlsConn.HandshakeContext(ctx); handshakeErr != nil {
+				rawConn.Close()
+				return nil, handshakeErr
+			}
+			return tlsConn, nil
 		},
 		Debug: false,
 		Debugf: func(format string, v ...interface{}) {
@@ -59,18 +92,14 @@ func insertIntoClickhouseAsync(conn clickhouse.Conn, payloadMap map[string]inter
 	// Build slices with column names and values for batch
 	var columnsNames []string
 	var columnsValues []interface{}
-	var err error
 
 	// Set table name from event_type json value ( each event - new table with own structure )
-	tableName := getTableName(payloadMap)
+	tableName, err := validatePayload(payloadMap)
+	if err != nil {
+		return err
+	}
 
-	// Add timestamp, uuid and api_key createTableColumns ( additional columns )
-	apiKey := authKey
-	currentTime := time.Now()
-	eventUuid := uuid.New()
-	payloadMap["api_key"] = apiKey
-	payloadMap["_timestamp"] = currentTime
-	payloadMap["eventn_ctx_event_id"] = eventUuid.String()
+	addServiceColumns(payloadMap)
 	payloadMap, columnsNames, columnsValues = sortMap(payloadMap)
 
 	clickhouseMutex.Lock()
@@ -89,22 +118,21 @@ func insertIntoClickhouseAsync(conn clickhouse.Conn, payloadMap map[string]inter
 	}
 	clickhouseMutex.Unlock()
 
-	if err := conn.AsyncInsert(ctx, fmt.Sprintf("INSERT INTO %s.%s (%s) VALUES (%s)", *clickhouseDatabaseName, tableName, strings.Join(columnsNames, ","), strings.Join(convertToStringSlice(columnsValues), ",")), false); err != nil {
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(columnsValues)), ",")
+	insertQuery := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", qualifiedTable(physicalTableName(tableName)), strings.Join(quoteIdentifiers(columnsNames), ","), placeholders)
+	if err := conn.AsyncInsert(ctx, insertQuery, false, columnsValues...); err != nil {
 		if strings.Contains(err.Error(), "code: 16, message: No such column") {
 			// Try to exec ALTER TABLE
 			alterErr := alterTable(ctx, conn, tableName, payloadMap, consumerName)
 			if alterErr != nil {
-				clickhouseBatchesSizeMutex.Unlock()
-				clickhouseMutex.Unlock()
 				monitoringTableAlteringErrors.WithLabelValues(consumerName, "async_mode", tableName).Inc()
 				return alterErr
 			}
 			monitoringTableAltered.WithLabelValues(consumerName, "async_mode", tableName).Inc()
 			// Retry after alter
 			return err
-		} else {
-			return err
 		}
+		return err
 	}
 
 	clickhouseAsyncSize++
@@ -122,18 +150,14 @@ func insertIntoClickhouse(conn clickhouse.Conn, payloadMap map[string]interface{
 	// Build slices with column names and values for batch
 	var columnsNames []string
 	var columnsValues []interface{}
-	var err error
 
 	// Set table name from event_type json value ( each event - new table with own structure )
-	tableName := getTableName(payloadMap)
+	tableName, err := validatePayload(payloadMap)
+	if err != nil {
+		return err
+	}
 
-	// Add timestamp, uuid and api_key createTableColumns ( additional columns )
-	apiKey := authKey
-	currentTime := time.Now()
-	eventUuid := uuid.New()
-	payloadMap["api_key"] = apiKey
-	payloadMap["_timestamp"] = currentTime
-	payloadMap["eventn_ctx_event_id"] = eventUuid.String()
+	addServiceColumns(payloadMap)
 	payloadMap, columnsNames, columnsValues = sortMap(payloadMap)
 
 	// Create batch for this table and field names set
@@ -160,7 +184,8 @@ func insertIntoClickhouse(conn clickhouse.Conn, payloadMap map[string]interface{
 
 		monitoringTableCreateQueries.WithLabelValues(consumerName, batchName, tableName).Inc()
 
-		clickhouseBatchesMap[batchName], err = conn.PrepareBatch(ctx, fmt.Sprintf("INSERT INTO %s.%s (%s)", *clickhouseDatabaseName, tableName, strings.Join(columnsNames, ",")))
+		batchQuery := fmt.Sprintf("INSERT INTO %s (%s)", qualifiedTable(physicalTableName(tableName)), strings.Join(quoteIdentifiers(columnsNames), ","))
+		clickhouseBatchesMap[batchName], err = conn.PrepareBatch(ctx, batchQuery)
 		if err != nil {
 			if strings.Contains(err.Error(), "code: 16, message: No such column") {
 				// Try to exec ALTER TABLE
@@ -178,7 +203,7 @@ func insertIntoClickhouse(conn clickhouse.Conn, payloadMap map[string]interface{
 					delete(clickhouseBatchesMap, batchName)
 					log.Printf("batch %s deleted", batchName)
 					var retryErr error
-					clickhouseBatchesMap[batchName], retryErr = conn.PrepareBatch(ctx, fmt.Sprintf("INSERT INTO %s.%s (%s)", *clickhouseDatabaseName, tableName, strings.Join(columnsNames, ",")))
+					clickhouseBatchesMap[batchName], retryErr = conn.PrepareBatch(ctx, batchQuery)
 					if retryErr != nil {
 						clickhouseBatchesSizeMutex.Unlock()
 						clickhouseMutex.Unlock()
@@ -206,7 +231,6 @@ func insertIntoClickhouse(conn clickhouse.Conn, payloadMap map[string]interface{
 		err = clickhouseBatchesMap[batchName].Append(columnsValues...)
 		clickhouseMutex.Unlock()
 		if err != nil {
-			// Monitoring
 			monitoringBatchAppendingErrors.WithLabelValues(consumerName, batchName, tableName).Inc()
 			return err
 		}
@@ -215,6 +239,7 @@ func insertIntoClickhouse(conn clickhouse.Conn, payloadMap map[string]interface{
 		clickhouseMutex.Unlock()
 		return err
 	}
+
 	monitoringBatchAppended.WithLabelValues(consumerName, batchName, tableName).Inc()
 
 	clickhouseMutex.Lock()
@@ -255,13 +280,13 @@ func insertIntoClickhouse(conn clickhouse.Conn, payloadMap map[string]interface{
 			clickhouseMutex.Unlock()
 			clickhouseBatchesSizeMutex.Unlock()
 			return nil
-		} else {
-			clickhouseMutex.Unlock()
-			clickhouseBatchesSizeMutex.Unlock()
-			// Try to catch some weird cases when batch doesn't exist
-			log.Printf("[%s] batch (%s) doesn't not exist anymore (sending phase)", consumerName, batchName)
-			return err
 		}
+
+		clickhouseMutex.Unlock()
+		clickhouseBatchesSizeMutex.Unlock()
+		// Try to catch some weird cases when batch doesn't exist
+		log.Printf("[%s] batch (%s) doesn't not exist anymore (sending phase)", consumerName, batchName)
+		return err
 	}
 
 	clickhouseMutex.Unlock()
@@ -269,8 +294,18 @@ func insertIntoClickhouse(conn clickhouse.Conn, payloadMap map[string]interface{
 	return nil
 }
 
-// getColumnType returns the ClickHouse data type string for a given value
-func getColumnType(value interface{}) string {
+// getColumnTypeWithName returns the ClickHouse data type for a value, checking for column name overrides first
+func getColumnTypeWithName(value interface{}, columnName string) string {
+	// Check if we have a configured override for this column name
+	if columnName != "" && columnTypeOverrides != nil {
+		if overrideType, exists := columnTypeOverrides[columnName]; exists {
+			// For debug
+			// log.Printf("Using configured type override for column '%s': %s", columnName, overrideType)
+			return overrideType
+		}
+	}
+
+	// For debug
 	//log.Print(reflect.ValueOf(value))
 	//log.Print(reflect.TypeOf(value))
 	switch value.(type) {
@@ -279,9 +314,9 @@ func getColumnType(value interface{}) string {
 		_, err := time.Parse("2006-01-02 15:04:05.000", fmt.Sprint(value))
 		if err == nil {
 			return "DateTime64"
-		} else {
-			return "String"
 		}
+		return "String"
+
 	case int, int32, int64:
 		return "Int64"
 	case float32, float64:
@@ -294,12 +329,87 @@ func getColumnType(value interface{}) string {
 	}
 }
 
+// convertValueToConfiguredType converts a value to match the configured column type
+func convertValueToConfiguredType(value interface{}, columnName string) (interface{}, error) {
+	if columnName == "" || columnTypeOverrides == nil {
+		return value, nil
+	}
+
+	configuredType, exists := columnTypeOverrides[columnName]
+	if !exists {
+		return value, nil
+	}
+
+	// Convert value to match configured type
+	switch configuredType {
+	case "String":
+		return fmt.Sprintf("%v", value), nil
+	case "Int64":
+		switch v := value.(type) {
+		case int:
+			return int64(v), nil
+		case int32:
+			return int64(v), nil
+		case int64:
+			return v, nil
+		case float32:
+			return int64(v), nil
+		case float64:
+			return int64(v), nil
+		case string:
+			return strconv.ParseInt(v, 10, 64)
+		default:
+			return nil, fmt.Errorf("cannot convert %T to Int64 for column %s", value, columnName)
+		}
+	case "Float64":
+		switch v := value.(type) {
+		case float32:
+			return float64(v), nil
+		case float64:
+			return v, nil
+		case int:
+			return float64(v), nil
+		case int32:
+			return float64(v), nil
+		case int64:
+			return float64(v), nil
+		case string:
+			return strconv.ParseFloat(v, 64)
+		default:
+			return nil, fmt.Errorf("cannot convert %T to Float64 for column %s", value, columnName)
+		}
+	case "DateTime64":
+		switch v := value.(type) {
+		case time.Time:
+			return v, nil
+		case string:
+			// Try multiple datetime formats
+			for _, format := range []string{
+				"2006-01-02 15:04:05.000",
+				"2006-01-02T15:04:05.000Z",
+				"2006-01-02T15:04:05Z",
+				"2006-01-02 15:04:05",
+			} {
+				if t, err := time.Parse(format, v); err == nil {
+					return t, nil
+				}
+			}
+			return nil, fmt.Errorf("cannot parse string '%s' as DateTime64 for column %s", v, columnName)
+		default:
+			return nil, fmt.Errorf("cannot convert %T to DateTime64 for column %s", value, columnName)
+		}
+	default:
+		return value, nil
+	}
+}
+
 // sortSlice just sort slice
 func sortSlice(strings []string) {
 	sort.Strings(strings)
 }
 
 // sortMap sort map and return sorted map + sorted slices with column names and values
+// Now includes value conversion based on configured column types
 func sortMap(myMap map[string]interface{}) (map[string]interface{}, []string, []interface{}) {
 
 	// Get the keys of the map
@@ -317,9 +427,16 @@ func sortMap(myMap map[string]interface{}) (map[string]interface{}, []string, []
 
 	orderedMap := make(map[string]interface{})
 	for _, k := range keys {
+		// Convert value if there's a configured type override
+		convertedValue, err := convertValueToConfiguredType(myMap[k], k)
+		if err != nil {
+			log.Printf("Warning: Failed to convert value for column '%s': %v. Using original value.", k, err)
+			convertedValue = myMap[k]
+		}
+
 		orderedFieldsNames = append(orderedFieldsNames, k)
-		orderedFieldsValues = append(orderedFieldsValues, myMap[k])
-		orderedMap[k] = myMap[k]
+		orderedFieldsValues = append(orderedFieldsValues, convertedValue)
+		orderedMap[k] = convertedValue
 	}
 
 	return orderedMap, orderedFieldsNames, orderedFieldsValues
@@ -334,7 +451,7 @@ func alterTable(ctx context.Context, conn clickhouse.Conn, tableName string, dat
 		Type string
 	}
 
-	if err := conn.Select(ctx, &result, fmt.Sprintf("SELECT name AS Name, type AS Type FROM system.columns WHERE table='%s' AND database='%s'", tableName, *clickhouseDatabaseName)); err != nil {
+	if err := conn.Select(ctx, &result, "SELECT name AS Name, type AS Type FROM system.columns WHERE table = ? AND database = ?", physicalTableName(tableName), *clickhouseDatabaseName); err != nil {
 		log.Printf("SELECT column metadata error")
 		return err
 	}
@@ -349,27 +466,38 @@ func alterTable(ctx context.Context, conn clickhouse.Conn, tableName string, dat
 
 	var previous string
 	i := 0
-	for key, _ := range data {
+	isCluster := len(*clickhouseClusterName) > 0
+	for key := range data {
 		_, ok := resultMap[key]
 		if !ok {
-
-			alterTableQuery := fmt.Sprintf("ALTER TABLE %s.%s %s ADD COLUMN %s %s %s", *clickhouseDatabaseName, tableName, clusterQueryPart, key, getColumnType(data[key]), previous)
+			alterTableQuery := buildAlterTableQuery(physicalTableName(tableName), clusterQueryPart, key, getColumnTypeWithName(data[key], key), previous)
 			println(alterTableQuery)
-			alterDistTableQuery := fmt.Sprintf("ALTER TABLE %s.dist_%s %s ADD COLUMN %s %s %s", *clickhouseDatabaseName, tableName, clusterQueryPart, key, getColumnType(data[key]), previous)
 
-			err := conn.Exec(ctx, alterDistTableQuery)
-			err = conn.Exec(ctx, alterTableQuery)
+			// Only alter Distributed table if we're using a cluster
+			if isCluster {
+				alterDistTableQuery := buildAlterTableQuery(distTablePrefix+tableName, clusterQueryPart, key, getColumnTypeWithName(data[key], key), previous)
+				err := conn.Exec(ctx, alterDistTableQuery)
+				if err != nil {
+					return err
+				}
+			}
+
+			err := conn.Exec(ctx, alterTableQuery)
 			if err != nil {
 				return err
 			}
 			log.Printf("[%s] Table %s altered because of new column: %s %s", consumerName, tableName, key, resultMap[key])
 		}
 		if i > 0 {
-			previous = "AFTER " + key
+			previous = "AFTER " + quoteIdentifier(key)
 		}
 		i++
 	}
 	return nil
+}
+
+func buildAlterTableQuery(tableName, clusterQueryPart, column, columnType, position string) string {
+	return fmt.Sprintf("ALTER TABLE %s %s ADD COLUMN %s %s %s", qualifiedTable(tableName), clusterQueryPart, quoteIdentifier(column), columnType, position)
 }
 
 func hash(s string) uint32 {
@@ -378,66 +506,75 @@ func hash(s string) uint32 {
 	return h.Sum32()
 }
 
+// Create a new table in clickhouse database
 func createTable(conn clickhouse.Conn, ctx context.Context, tableName string, payloadMap map[string]interface{}) error {
-	// Generate the SQL statement to create the table
-	clusterQueryPart := onClusterQuery()
-	var createTableColumns []string
-	for key, value := range payloadMap {
-		columnType := getColumnType(value)
-		// DateTime64 Debug
-		//if columnType == "DateTime64" {
-		//	log.Printf("Found DateTime64 column: %s table: %s", key, tableName)
-		//}
-		createTableColumns = append(createTableColumns, fmt.Sprintf("%s %s", key, columnType))
-	}
-	sortSlice(createTableColumns)
-
-	createTableQuery := fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s.%s %s (%s) ENGINE = ReplicatedReplacingMergeTree() PARTITION BY toYYYYMM(_timestamp) PRIMARY KEY eventn_ctx_event_id ORDER BY eventn_ctx_event_id SETTINGS index_granularity = 8192", *clickhouseDatabaseName, tableName, clusterQueryPart, strings.Join(createTableColumns, ","))
-	createDistTableQuery := fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s.dist_%s %s (%s) ENGINE = Distributed('%s', '%s', '%s', rand())", *clickhouseDatabaseName, tableName, clusterQueryPart, strings.Join(createTableColumns, ","), *clickhouseClusterName, *clickhouseDatabaseName, tableName)
+	createTableQuery, createDistTableQuery := buildCreateTableQueries(tableName, payloadMap)
 	err := conn.Exec(ctx, createTableQuery)
 	if err != nil {
 		return err
 	}
-	err = conn.Exec(ctx, createDistTableQuery)
-	if err != nil {
-		return err
+
+	if createDistTableQuery != "" {
+		err = conn.Exec(ctx, createDistTableQuery)
+		if err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+// buildCreateTableQueries returns the base table DDL and, in cluster mode, the Distributed table DDL.
+func buildCreateTableQueries(tableName string, payloadMap map[string]interface{}) (string, string) {
+	clusterQueryPart := onClusterQuery()
+	var createTableColumns []string
+	for key, value := range payloadMap {
+		createTableColumns = append(createTableColumns, fmt.Sprintf("%s %s", quoteIdentifier(key), getColumnTypeWithName(value, key)))
+	}
+	sortSlice(createTableColumns)
+	columns := strings.Join(createTableColumns, ",")
+
+	isCluster := len(*clickhouseClusterName) > 0
+
+	engine := "ReplacingMergeTree()"
+	if isCluster {
+		engine = "ReplicatedReplacingMergeTree()"
+	}
+
+	createTableQuery := fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s %s (%s) ENGINE = %s PARTITION BY toYYYYMM(_timestamp) PRIMARY KEY eventn_ctx_event_id ORDER BY eventn_ctx_event_id SETTINGS index_granularity = 8192", qualifiedTable(physicalTableName(tableName)), clusterQueryPart, columns, engine)
+	if !isCluster {
+		return createTableQuery, ""
+	}
+
+	createDistTableQuery := fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s %s (%s) ENGINE = Distributed(%s, %s, %s, rand())", qualifiedTable(distTablePrefix+tableName), clusterQueryPart, columns, quoteString(*clickhouseClusterName), quoteString(*clickhouseDatabaseName), quoteString(tableName))
+	return createTableQuery, createDistTableQuery
+}
+
+// addServiceColumns sets the connector-owned columns, overriding any client-supplied values.
+func addServiceColumns(payloadMap map[string]interface{}) {
+	payloadMap["api_key"] = ""
+	payloadMap["_timestamp"] = time.Now()
+	payloadMap["eventn_ctx_event_id"] = uuid.New().String()
+}
+
+// distTablePrefix is the historical prefix used for Distributed tables in cluster deployments.
+const distTablePrefix = "dist_"
+
+func useLegacyDistPrefix() bool {
+	return *clickhouseLegacyDistPrefix && len(*clickhouseClusterName) == 0
+}
+
+func physicalTableName(tableName string) string {
+	if useLegacyDistPrefix() {
+		return distTablePrefix + tableName
+	}
+	return tableName
 }
 
 func onClusterQuery() string {
 	// Add `ON CLUSTER ...` suffix to query ( for clickhouse cluster )
 	clusterQueryPart := ""
 	if len(*clickhouseClusterName) > 0 {
-		clusterQueryPart = fmt.Sprintf("ON CLUSTER %s", *clickhouseClusterName)
+		clusterQueryPart = fmt.Sprintf("ON CLUSTER %s", quoteIdentifier(*clickhouseClusterName))
 	}
 	return clusterQueryPart
-}
-
-func getTableName(payloadMap map[string]interface{}) string {
-	tableName := "default"
-	if payloadMap["event_type"] != nil {
-		tableName = payloadMap["event_type"].(string)
-	}
-	return tableName
-}
-
-func convertToStringSlice(interfaces []interface{}) []string {
-	strings := make([]string, len(interfaces))
-	for i, v := range interfaces {
-		switch v.(type) {
-		case time.Time:
-			strings[i] = fmt.Sprintf("'%s'", v.(time.Time).Format("2006-01-02 15:04:05.000"))
-		case float64:
-			strings[i] = fmt.Sprintf("'%f'", v.(float64))
-		default:
-			// Fallback to string if the data type is unknown
-			if str, ok := v.(*string); ok && str != nil {
-				strings[i] = fmt.Sprintf("'%s'", *str)
-			} else {
-				strings[i] = fmt.Sprintf("'%s'", v.(string))
-			}
-		}
-	}
-	return strings
 }

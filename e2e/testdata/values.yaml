@@ -1,0 +1,31 @@
+serverReplicaCount: 1
+consumerReplicaCount: 1
+
+image:
+  repository: clickhouse-connector
+  tag: e2e
+  pullPolicy: Never
+
+config:
+  threads: 2
+  maxBodyBytes: 4096
+  clickhouse:
+    address: clickhouse:9000
+    user: connector
+    database: clickhouse_connector
+    clusterName: ""
+    BatchSize: 1
+  columnTypesConfig:
+    ts: "String"
+
+valkey:
+  metrics:
+    enabled: true
+
+networkPolicy:
+  enabled: true
+  clickhouseEgress:
+    cidrs:
+      - 10.244.0.0/16
+    ports:
+      - 9000

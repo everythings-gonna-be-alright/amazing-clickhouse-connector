@@ -13,10 +13,11 @@ spec:
       {{- include "clickhouse-connector.selectorLabels" . | nindent 6 }}
   template:
     metadata:
-      {{- with .Values.podAnnotations }}
       annotations:
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
-      {{- end }}
+        {{- end }}
       labels:
         {{- include "clickhouse-connector.selectorLabels" . | nindent 8 }}
     spec:
@@ -25,6 +26,7 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       serviceAccountName: {{ include "clickhouse-connector.serviceAccountName" . }}
+      automountServiceAccountToken: false
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
@@ -35,8 +37,19 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: [ "/sbin/clickhouse-connector",
                      "-mode","server",
-                     "-authKey","{{ .Values.config.authKey }}",
-                     "-redisServer", "{{ include "clickhouse-connector.fullname" . }}-redis-master:6379" ]
+                     "-maxBodyBytes","{{ int64 .Values.config.maxBodyBytes }}",
+                     "-redisServer", "{{ include "clickhouse-connector.redisFullname" . }}:6379" ]
+          env:
+            - name: AUTH_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "clickhouse-connector.secretName" . }}
+                  key: auth-key
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "clickhouse-connector.secretName" . }}
+                  key: redis-password
           ports:
             - name: http
               containerPort: 6000

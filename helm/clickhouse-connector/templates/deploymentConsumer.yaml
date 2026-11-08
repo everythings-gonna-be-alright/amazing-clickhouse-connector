@@ -13,10 +13,11 @@ spec:
       {{- include "clickhouse-connector.selectorLabels" . | nindent 6 }}
   template:
     metadata:
-      {{- with .Values.podAnnotations }}
       annotations:
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
-      {{- end }}
+        {{- end }}
       labels:
         {{- include "clickhouse-connector.selectorLabels" . | nindent 8 }}
     spec:
@@ -25,6 +26,7 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       serviceAccountName: {{ include "clickhouse-connector.serviceAccountName" . }}
+      automountServiceAccountToken: false
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
@@ -35,13 +37,28 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command: [ "/sbin/clickhouse-connector", "-mode","consumer",
                      "-threads","{{ .Values.config.threads }}",
-                     "-redisServer", "{{ include "clickhouse-connector.fullname" . }}-redis-master:6379",
+                     "-redisServer", "{{ include "clickhouse-connector.redisFullname" . }}:6379",
                      "-clickhouseServer","{{ .Values.config.clickhouse.address }}",
                      "-clickhouseUsername","{{ .Values.config.clickhouse.user }}",
-                     "-clickhousePassword","{{ .Values.config.clickhouse.password }}",
                      "-clickhouseDatabaseName","{{ .Values.config.clickhouse.database }}",
                      "-clickhouseClusterName","{{ .Values.config.clickhouse.clusterName }}",
-                     "-clickhouseBatchSize","{{ .Values.config.clickhouse.BatchSize }}" ]
+                     "-clickhouseBatchSize","{{ .Values.config.clickhouse.BatchSize }}",
+                     "-maxColumns","{{ .Values.config.maxColumns }}"
+                     {{- if .Values.config.clickhouse.tls }},"-clickhouseTLS=true"{{- end }}
+                     {{- if .Values.config.clickhouse.tlsSkipVerify }},"-clickhouseTLSSkipVerify=true"{{- end }}
+                     {{- if .Values.config.clickhouse.legacyDistPrefix }},"-clickhouseLegacyDistPrefix=true"{{- end }}
+                     {{- if .Values.config.columnTypesConfig }},"-columnTypesConfig",{{ .Values.config.columnTypesConfig | toJson | quote }}{{- end }} ]
+          env:
+            - name: CLICKHOUSE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "clickhouse-connector.secretName" . }}
+                  key: clickhouse-password
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "clickhouse-connector.secretName" . }}
+                  key: redis-password
           ports:
             - name: metrics
               containerPort: 6001
