@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security
+
+- Updated `github.com/andybalholm/brotli` to v1.2.7 (GO-2026-6888, excessive memory allocation when
+  decompressing crafted streams) and the vulnerable dependencies of the end-to-end test module.
+
 ## [0.1.1] - 2026-11-08
 
 ### Added
