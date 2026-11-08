@@ -26,6 +26,20 @@ You can run both with docker-compose and then send events to `/api/v1/s2s/event`
 One request must contain at least one well-formed json object.
 It is also possible to set custom event_type. In this case event will store into corresponding to event_type table ( default by default ).
 
+## Download
+
+Prebuilt static binaries for Linux, macOS and Windows (`amd64` and `arm64`) are attached to every
+[GitHub release](https://github.com/everythings-gonna-be-alright/amazing-clickhouse-connector/releases),
+together with `checksums.txt` and a build provenance attestation.
+
+```shell
+VERSION=0.1.1
+curl -fsSLO "https://github.com/everythings-gonna-be-alright/amazing-clickhouse-connector/releases/download/v${VERSION}/clickhouse-connector_${VERSION}_linux_amd64.tar.gz"
+curl -fsSLO "https://github.com/everythings-gonna-be-alright/amazing-clickhouse-connector/releases/download/v${VERSION}/checksums.txt"
+sha256sum --ignore-missing -c checksums.txt
+gh attestation verify "clickhouse-connector_${VERSION}_linux_amd64.tar.gz" --repo everythings-gonna-be-alright/amazing-clickhouse-connector
+```
+
 ## Arguments
 
 | Argument                      | Value                                 | Default                 |

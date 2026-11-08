@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Release workflow that builds static binaries for Linux, macOS and Windows (`amd64`, `arm64`) on a version tag
+  and attaches them to a GitHub release with checksums and a build provenance attestation.
+
 ### Security
 
 - Updated `github.com/andybalholm/brotli` to v1.2.7 (GO-2026-6888, excessive memory allocation when

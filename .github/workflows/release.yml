@@ -1,0 +1,151 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to build and release, for example v0.1.1
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Validate tag format
+        run: |
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "tag '$TAG' is not a vMAJOR.MINOR.PATCH version" >&2
+            exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ env.TAG }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Tag must be on the default branch
+        run: |
+          git fetch --no-tags origin "+refs/heads/${DEFAULT_BRANCH}:refs/remotes/origin/${DEFAULT_BRANCH}"
+          git merge-base --is-ancestor HEAD "origin/${DEFAULT_BRANCH}"
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+
+      - name: Tag must match the chart appVersion and have a changelog entry
+        run: |
+          version="${TAG#v}"
+          app_version="$(sed -n 's/^appVersion: "\(.*\)"$/\1/p' helm/clickhouse-connector/Chart.yaml)"
+          if [ "$app_version" != "$version" ]; then
+            echo "Chart appVersion '$app_version' does not match tag '$TAG'" >&2
+            exit 1
+          fi
+          .github/scripts/release-notes.sh "$version" > /dev/null
+
+  build:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: true
+      matrix:
+        goos: [linux, darwin, windows]
+        goarch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ env.TAG }}
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          name="clickhouse-connector_${version}_${GOOS}_${GOARCH}"
+          bin="clickhouse-connector"
+          if [ "$GOOS" = "windows" ]; then bin="clickhouse-connector.exe"; fi
+
+          mkdir -p "dist/${name}"
+          go build -trimpath -ldflags="-s -w" -o "dist/${name}/${bin}" .
+          cp README.md CHANGELOG.md "dist/${name}/"
+
+          cd dist
+          if [ "$GOOS" = "windows" ]; then
+            zip -q -r "${name}.zip" "${name}"
+          else
+            tar --owner=0 --group=0 --numeric-owner -czf "${name}.tar.gz" "${name}"
+          fi
+          rm -rf "${name}"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ env.TAG }}
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: dist
+          pattern: dist-*
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum -- *.tar.gz *.zip > checksums.txt
+
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          .github/scripts/release-notes.sh "${TAG#v}" > notes.md
+          gh release create "$TAG" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "$TAG" \
+            --notes-file notes.md
