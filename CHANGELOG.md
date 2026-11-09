@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-11-09
+
 ### Added
 
 - Release workflow that builds static binaries for Linux, macOS and Windows (`amd64`, `arm64`) on a version tag
@@ -16,11 +18,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - The Helm chart image repository defaults to `hiload/amazing-clickhouse-connector`.
+- Updated `github.com/adjust/rmq/v5` to 5.2.0, `github.com/ClickHouse/clickhouse-go/v2` to 2.50.0 and
+  `github.com/fatih/color` to 1.19.0. The Redis client moved to `github.com/redis/go-redis/v9`, required by rmq 5.2.0.
 
 ### Security
 
 - Updated `github.com/andybalholm/brotli` to v1.2.7 (GO-2026-6888, excessive memory allocation when
   decompressing crafted streams) and the vulnerable dependencies of the end-to-end test module.
+- Pinned `github.com/redis/go-redis/v9` to 9.23.0, which fixes GO-2025-3540 present in the 9.0.3 release required by
+  rmq.
 
 ## [0.1.1] - 2026-11-08
 
@@ -92,5 +98,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and column alteration, Prometheus metrics, Helm chart, Grafana dashboard and a local docker-compose
   environment.
 
-[Unreleased]: https://github.com/everythings-gonna-be-alright/amazing-clickhouse-connector/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/everythings-gonna-be-alright/amazing-clickhouse-connector/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/everythings-gonna-be-alright/amazing-clickhouse-connector/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/everythings-gonna-be-alright/amazing-clickhouse-connector/compare/737bd03...v0.1.1

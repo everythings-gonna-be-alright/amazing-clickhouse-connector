@@ -8,7 +8,7 @@ import (
 
 	"github.com/adjust/rmq/v5"
 	"github.com/avast/retry-go"
-	"github.com/go-redis/redis/v8"
+	"github.com/redis/go-redis/v9"
 )
 
 const (
