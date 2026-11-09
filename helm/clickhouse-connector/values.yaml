@@ -6,7 +6,7 @@ serverReplicaCount: 2
 consumerReplicaCount: 2
 
 image:
-  repository: clickhouse-connector
+  repository: hiload/amazing-clickhouse-connector
   pullPolicy: IfNotPresent
   # Overrides the image tag whose default is the chart appVersion.
   tag: ""

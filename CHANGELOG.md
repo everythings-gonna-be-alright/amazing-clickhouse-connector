@@ -10,6 +10,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Release workflow that builds static binaries for Linux, macOS and Windows (`amd64`, `arm64`) on a version tag
   and attaches them to a GitHub release with checksums and a build provenance attestation.
+- Release workflow publishes a multi-architecture image with provenance and SBOM to Docker Hub
+  (`hiload/amazing-clickhouse-connector`).
+
+### Changed
+
+- The Helm chart image repository defaults to `hiload/amazing-clickhouse-connector`.
 
 ### Security
 

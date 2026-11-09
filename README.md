@@ -40,6 +40,18 @@ sha256sum --ignore-missing -c checksums.txt
 gh attestation verify "clickhouse-connector_${VERSION}_linux_amd64.tar.gz" --repo everythings-gonna-be-alright/amazing-clickhouse-connector
 ```
 
+## Docker image
+
+Multi-architecture images (`linux/amd64`, `linux/arm64`) are published to Docker Hub for every release:
+[hiload/amazing-clickhouse-connector](https://hub.docker.com/r/hiload/amazing-clickhouse-connector).
+
+```shell
+docker pull hiload/amazing-clickhouse-connector:<version>
+```
+
+Tags follow the release version (`X.Y.Z` and `X.Y`). There is no `latest` tag, pin a version. The Helm chart uses this
+image by default and takes the tag from the chart `appVersion`.
+
 ## Arguments
 
 | Argument                      | Value                                 | Default                 |
