@@ -1,5 +1,5 @@
 # Builder runs natively on the build host and cross-compiles, so no QEMU is needed for other targets.
-FROM --platform=$BUILDPLATFORM golang:1.27.3@sha256:921f61120011c774a7b37fd80bd3c3d259636090d3cd002b6a344322a0328082 AS builder
+FROM --platform=$BUILDPLATFORM golang:1.27.4@sha256:5e8afd493a7124a8586e134d9b532731161d4b9becf9dee5a5956b107426f93d AS builder
 
 ARG TARGETOS
 ARG TARGETARCH
